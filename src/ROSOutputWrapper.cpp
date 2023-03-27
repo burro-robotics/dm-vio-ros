@@ -26,6 +26,12 @@
 #include "dmvio_ros/DMVIOPoseMsg.h"
 #include <util/FrameShell.h>
 #include <geometry_msgs/PoseStamped.h>
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
+#include <geometry_msgs/TransformStamped.h>
+#include <geometry_msgs/PoseArray.h>
+
+
+
 
 using namespace dmvio;
 
@@ -34,11 +40,14 @@ dmvio::ROSOutputWrapper::ROSOutputWrapper()
 {
     systemStatePublisher = nh.advertise<std_msgs::Int32>("system_status", 10);
     dmvioPosePublisher = nh.advertise<dmvio_ros::DMVIOPoseMsg>("frame_tracked", 10);
-    unscaledPosePublisher = nh.advertise<geometry_msgs::PoseStamped>("unscaled_pose", 10);
+    unscaledPosePublisher = nh.advertise<geometry_msgs::PoseWithCovarianceStamped>("unscaled_pose", 10);
+    unscaledPosePublisher_odom = nh.advertise<geometry_msgs::PoseWithCovarianceStamped>("unscaled_pose_odom", 10);
+
     // While we publish the metric pose for convenience we don't recommend using it.
     // The reason is that the scale used for generating it might change over time.
     // Usually it is better to save the trajectory and multiply all of it with the newest scale.
     metricPosePublisher = nh.advertise<geometry_msgs::PoseStamped>("metric_pose", 10);
+    unscaled_pose_array = nh.advertise<geometry_msgs::PoseArray>("unscaled_pose_array", 1);
 }
 
 
@@ -78,7 +87,7 @@ void ROSOutputWrapper::publishCamPose(dso::FrameShell* frame, dso::CalibHessian*
 {
     dmvio_ros::DMVIOPoseMsg msg;
     msg.header.stamp = ros::Time(frame->timestamp);
-    msg.header.frame_id = "world";
+    msg.header.frame_id = "world"; // burro doesn't know the transform to the world
 
     auto& camToWorld = frame->camToWorld;
 
@@ -86,10 +95,49 @@ void ROSOutputWrapper::publishCamPose(dso::FrameShell* frame, dso::CalibHessian*
     setMsgFromSE3(poseMsg, camToWorld);
 
     // Also publish unscaled pose on its own (e.g. for visualization in Rviz).
-    geometry_msgs::PoseStamped unscaledMsg;
+    geometry_msgs::PoseWithCovarianceStamped unscaledMsg;
     unscaledMsg.header = msg.header;
-    unscaledMsg.pose = poseMsg;
+    unscaledMsg.pose.pose = poseMsg;
     unscaledPosePublisher.publish(unscaledMsg);
+
+    //initial_camera4_to_odom is equivalent to the transformation from world frame to odom
+    //should only happen once
+    tf::StampedTransform initial_world_to_odom;
+    if (!convert && TfGetTransform(tf_listener,
+                        "odom",
+                        "camera4_infra1_optical_frame", // where world to odom
+                        ros::Time(0),
+                        initial_world_to_odom,
+                        3.0))
+    {
+        // camToWorld * from_odom_to_world
+        convert = true;
+
+        Eigen::Quaterniond q;
+        q.w() = initial_world_to_odom.getRotation().getW();
+        q.x() = initial_world_to_odom.getRotation().getX();
+        q.y() = initial_world_to_odom.getRotation().getY();
+        q.z() = initial_world_to_odom.getRotation().getZ();
+        world_to_odom.so3().setQuaternion(q);
+        initial_world_to_odom.getOrigin();
+        world_to_odom.translation().x() = initial_world_to_odom.getOrigin().getX();
+        world_to_odom.translation().y() = initial_world_to_odom.getOrigin().getY();
+        world_to_odom.translation().z() = initial_world_to_odom.getOrigin().getZ();
+    }
+
+    if(convert)
+    {
+        // publish
+        parray_msg.header = msg.header;
+        geometry_msgs::PoseWithCovarianceStamped unscaledMsg_odom;
+        std::cout << "world to odom\n" << world_to_odom.matrix() << '\n';
+        setMsgFromSE3(unscaledMsg_odom.pose.pose, world_to_odom * camToWorld);
+        parray_msg.poses.push_back(unscaledMsg_odom.pose.pose);
+        unscaledMsg_odom.pose.covariance = {1,0,0,0,0,0, 0,1,0,0,0,0, 0,0,1,0,0,0, 0,0,0,1,0,0, 0,0,0,0,1,0, 0,0,0,0,0,1};
+        unscaledMsg_odom.header.frame_id = parray_msg.header.frame_id = "odom";
+        unscaledPosePublisher_odom.publish(unscaledMsg_odom);
+        unscaled_pose_array.publish(parray_msg);
+    }
 
     {
         std::unique_lock<std::mutex> lk(mutex);

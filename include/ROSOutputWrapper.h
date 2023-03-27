@@ -26,6 +26,10 @@
 #include <IOWrapper/Output3DWrapper.h>
 #include <ros/ros.h>
 #include <mutex>
+#include <tf/transform_listener.h>
+#include <tf2_ros/transform_broadcaster.h>
+#include <geometry_msgs/PoseArray.h>
+
 
 namespace dmvio
 {
@@ -67,10 +71,51 @@ public:
     virtual void publishCamPose(dso::FrameShell* frame, dso::CalibHessian* HCalib) override;
 
     // In case you want to additionally publish pointclouds or keyframe poses you need to override Output3DWrapper::publishKeyframes
+    bool TfGetTransform(tf::TransformListener& tf_listener,
+                    const std::string & from_frame_id,
+                    const std::string & to_frame_id,
+                    const ros::Time & stamp,
+                    tf::StampedTransform & transform,
+                    double wait)
+    {
+        try
+        {
+            if(!stamp.isZero() || wait > 0.0)
+            {
+                std::string errorMsg;
+                if(!tf_listener.waitForTransform(from_frame_id, to_frame_id, stamp, ros::Duration(wait), ros::Duration(0.01), &errorMsg))
+                {
+                    ROS_WARN("%s: Could not get transform from %s to %s (stamp=%f) after %f seconds "
+                            "(\"wait_for_transform_duration\"=%f)! Error=\"%s\"",
+                            ros::this_node::getName().c_str(),
+                            from_frame_id.c_str(),
+                            to_frame_id.c_str(),
+                            stamp.toSec(),
+                            wait,
+                            wait,
+                            errorMsg.c_str());
+
+                    return false;
+                }
+                else
+                {
+                    tf_listener.lookupTransform(from_frame_id, to_frame_id, stamp, transform);
+                    return true;
+                }
+            }
+            return false;
+
+        }
+        catch(tf::TransformException & ex)
+        {
+            ROS_WARN( "%s",ex.what());
+            return false;
+        }
+    }
 
 private:
     ros::NodeHandle nh;
-    ros::Publisher dmvioPosePublisher, systemStatePublisher, unscaledPosePublisher, metricPosePublisher;
+    ros::Publisher dmvioPosePublisher, systemStatePublisher, unscaledPosePublisher, metricPosePublisher, unscaledPosePublisher_odom, unscaled_pose_array;
 
     // Protects transformDSOToIMU.
     std::mutex mutex;
@@ -78,6 +123,13 @@ private:
     std::unique_ptr<dmvio::TransformDSOToIMU> transformDSOToIMU;
     bool scaleAvailable = false; // True iff transformDSOToIMU contains a valid scale.
     std::atomic<dmvio::SystemStatus> lastSystemStatus;
+    tf::TransformListener tf_listener;
+    tf2_ros::TransformBroadcaster tfbr_;
+    bool convert{false};
+    Sophus::SE3 world_to_odom;
+    geometry_msgs::PoseArray parray_msg;
+
+
 };
 
 
