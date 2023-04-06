@@ -126,7 +126,7 @@ private:
     tf::TransformListener tf_listener;
     tf2_ros::TransformBroadcaster tfbr_;
     bool convert{false};
-    Sophus::SE3 world_to_odom;
+    Sophus::SE3 world_to_odom, camera_to_base_link;
     geometry_msgs::PoseArray parray_msg;
 
 

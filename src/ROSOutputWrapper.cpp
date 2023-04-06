@@ -103,11 +103,18 @@ void ROSOutputWrapper::publishCamPose(dso::FrameShell* frame, dso::CalibHessian*
     //initial_camera4_to_odom is equivalent to the transformation from world frame to odom
     //should only happen once
     tf::StampedTransform initial_world_to_odom;
+    tf::StampedTransform from_camera_to_baselink_tf;
     if (!convert && TfGetTransform(tf_listener,
                         "odom",
                         "camera4_infra1_optical_frame", // where world to odom
                         ros::Time(0),
                         initial_world_to_odom,
+                        3.0) && \
+                        TfGetTransform(tf_listener,
+                        "camera4_infra1_optical_frame",
+                        "base_link",
+                        ros::Time(0),
+                        from_camera_to_baselink_tf,
                         3.0))
     {
         // camToWorld * from_odom_to_world
@@ -119,19 +126,27 @@ void ROSOutputWrapper::publishCamPose(dso::FrameShell* frame, dso::CalibHessian*
         q.y() = initial_world_to_odom.getRotation().getY();
         q.z() = initial_world_to_odom.getRotation().getZ();
         world_to_odom.so3().setQuaternion(q);
-        initial_world_to_odom.getOrigin();
         world_to_odom.translation().x() = initial_world_to_odom.getOrigin().getX();
         world_to_odom.translation().y() = initial_world_to_odom.getOrigin().getY();
         world_to_odom.translation().z() = initial_world_to_odom.getOrigin().getZ();
+
+        q.w() = from_camera_to_baselink_tf.getRotation().getW();
+        q.x() = from_camera_to_baselink_tf.getRotation().getX();
+        q.y() = from_camera_to_baselink_tf.getRotation().getY();
+        q.z() = from_camera_to_baselink_tf.getRotation().getZ();
+        camera_to_base_link.so3().setQuaternion(q);
+        camera_to_base_link.translation().x() = from_camera_to_baselink_tf.getOrigin().getX();
+        camera_to_base_link.translation().y() = from_camera_to_baselink_tf.getOrigin().getY();
+        camera_to_base_link.translation().z() = from_camera_to_baselink_tf.getOrigin().getZ();
     }
 
     if(convert)
     {
         // publish
-        parray_msg.header = msg.header;
         geometry_msgs::PoseWithCovarianceStamped unscaledMsg_odom;
-        std::cout << "world to odom\n" << world_to_odom.matrix() << '\n';
-        setMsgFromSE3(unscaledMsg_odom.pose.pose, world_to_odom * camToWorld);
+        parray_msg.header = unscaledMsg_odom.header = msg.header;
+        // std::cout << "world to odom\n" << world_to_odom.matrix() << '\n';
+        setMsgFromSE3(unscaledMsg_odom.pose.pose, world_to_odom * camToWorld * camera_to_base_link);
         parray_msg.poses.push_back(unscaledMsg_odom.pose.pose);
         unscaledMsg_odom.pose.covariance = {1,0,0,0,0,0, 0,1,0,0,0,0, 0,0,1,0,0,0, 0,0,0,1,0,0, 0,0,0,0,1,0, 0,0,0,0,0,1};
         unscaledMsg_odom.header.frame_id = parray_msg.header.frame_id = "odom";
@@ -141,6 +156,16 @@ void ROSOutputWrapper::publishCamPose(dso::FrameShell* frame, dso::CalibHessian*
 
     {
         std::unique_lock<std::mutex> lk(mutex);
+
+        if (!transformDSOToIMU)
+        {
+            std::cout << "No TransFromDSOToIMU\n";
+        }
+
+        if (!scaleAvailable)
+        {
+            std::cout << "No scaleAvailable\n";
+        }
         if(transformDSOToIMU && scaleAvailable)
         {
             msg.scale = transformDSOToIMU->getScale();

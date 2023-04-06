@@ -150,7 +150,7 @@ void run(IOWrap::PangolinDSOViewer* viewer)
 
         if(fullSystem->isLost)
         {
-            printf("LOST!!\n");
+            printf("LOST!!OH YEAH\n");
             break;
         }
 
